@@ -1,37 +1,123 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Stock Sentiment Analysis MVP, Phase 1
 
-## Getting Started
+This project now includes the backend and data foundation for a stock sentiment analysis platform inside a Next.js App Router app. The current homepage is unchanged for now. Phase 1 focuses on provider integrations, normalization, scoring, Prisma persistence, caching, and API routes.
 
-First, run the development server:
+## Stack
+
+- Next.js App Router
+- TypeScript
+- Tailwind CSS
+- Zod
+- Prisma ORM
+- SQLite
+
+React Query and Recharts are intentionally deferred to the later UI/dashboard phase so this phase does not add unused frontend code.
+
+## Providers
+
+- Finnhub: primary source for company news and news sentiment
+- Financial Modeling Prep: primary source for fundamentals
+- Alpha Vantage: fallback source for news sentiment
+
+## Required Environment Variables
+
+Copy `.env.example` to `.env.local` or `.env` and set:
+
+```bash
+DATABASE_URL="file:./dev.db"
+FINNHUB_API_KEY="your_finnhub_key"
+FMP_API_KEY="your_fmp_key"
+ALPHA_VANTAGE_API_KEY="your_alpha_vantage_key"
+HTTP_TIMEOUT_MS="10000"
+HTTP_RETRY_COUNT="2"
+CACHE_TTL_MINUTES="15"
+```
+
+## Install
+
+```bash
+npm install
+```
+
+## Prisma Setup
+
+Generate the Prisma client:
+
+```bash
+DATABASE_URL="file:./dev.db" npm run prisma:generate
+```
+
+Run a Prisma migration locally:
+
+```bash
+DATABASE_URL="file:./dev.db" npm run prisma:migrate -- --name init
+```
+
+If your local Prisma migration engine behaves differently than this environment, the repo also includes an initial SQL migration under [prisma/migrations/20260403000000_init/migration.sql](/Users/seanlee/code/0dte-goes-crazy/prisma/migrations/20260403000000_init/migration.sql).
+
+## Run The App
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## API Routes
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Analyze one ticker:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+curl "http://localhost:3000/api/analyze/AAPL"
+```
 
-## Learn More
+Compare multiple tickers:
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+curl "http://localhost:3000/api/compare?symbols=AAPL,MSFT,NVDA"
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Response Shape
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`/api/analyze/[symbol]` returns normalized analysis JSON with:
 
-## Deploy on Vercel
+- recent normalized news articles
+- sentiment score in `-1..1`
+- confidence score in `0..100`
+- fundamentals quality score in `0..100`
+- combined score in `0..100`
+- bullish, neutral, or bearish label
+- deterministic summary
+- trend points for sentiment over time
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+`/api/compare` returns compact comparison rows derived from the same analysis service.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
-# 0dte-goes-crazy
+## Caching
+
+- Raw provider cache TTL: 15 minutes
+- Analysis snapshot TTL: 15 minutes
+- Raw provider payloads are stored in SQLite as serialized JSON strings because Prisma’s SQLite connector in this environment does not support schema-level `Json` columns cleanly for migration.
+- Finnhub is attempted first for sentiment/news.
+- Alpha Vantage is used as fallback for news/sentiment when needed.
+- Fundamentals degrade gracefully to a neutral baseline when FMP data is unavailable.
+
+## Backend Layout
+
+- [lib/env.ts](/Users/seanlee/code/0dte-goes-crazy/lib/env.ts): environment parsing
+- [lib/http.ts](/Users/seanlee/code/0dte-goes-crazy/lib/http.ts): fetch helper with timeout and retry
+- [lib/config/scoring.ts](/Users/seanlee/code/0dte-goes-crazy/lib/config/scoring.ts): weights and cache config
+- [lib/prisma.ts](/Users/seanlee/code/0dte-goes-crazy/lib/prisma.ts): Prisma client singleton
+- [types/domain.ts](/Users/seanlee/code/0dte-goes-crazy/types/domain.ts): internal domain models
+- [types/external.ts](/Users/seanlee/code/0dte-goes-crazy/types/external.ts): provider schemas
+- [services/providers](/Users/seanlee/code/0dte-goes-crazy/services/providers): raw provider integrations
+- [services/normalizers](/Users/seanlee/code/0dte-goes-crazy/services/normalizers): internal normalization boundaries
+- [services/scoring](/Users/seanlee/code/0dte-goes-crazy/services/scoring): sentiment, fundamentals, and combined scoring
+- [services/analysis/analyzeTicker.ts](/Users/seanlee/code/0dte-goes-crazy/services/analysis/analyzeTicker.ts): orchestration and persistence
+- [app/api/analyze/[symbol]/route.ts](/Users/seanlee/code/0dte-goes-crazy/app/api/analyze/[symbol]/route.ts): single-ticker API
+- [app/api/compare/route.ts](/Users/seanlee/code/0dte-goes-crazy/app/api/compare/route.ts): comparison API
+
+## Verification Commands
+
+```bash
+DATABASE_URL="file:./dev.db" npm run prisma:generate
+DATABASE_URL="file:./dev.db" npm run lint
+DATABASE_URL="file:./dev.db" npm run build
+```

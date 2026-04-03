@@ -1,0 +1,49 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model TickerCache {
+  id        String   @id @default(cuid())
+  symbol    String
+  provider  String
+  payload   String
+  fetchedAt DateTime @default(now())
+
+  @@unique([symbol, provider])
+  @@index([symbol, fetchedAt])
+}
+
+model AnalysisSnapshot {
+  id                       String   @id @default(cuid())
+  symbol                   String
+  sentimentScore           Float
+  confidenceScore          Int
+  fundamentalsQualityScore Int
+  combinedScore            Int
+  label                    String
+  summary                  String
+  payload                  String
+  createdAt                DateTime @default(now())
+
+  @@index([symbol, createdAt])
+}
+
+model NewsArticle {
+  id             String   @id @default(cuid())
+  symbol         String
+  provider       String
+  headline       String
+  summary        String?
+  source         String?
+  url            String
+  publishedAt    DateTime
+  sentimentScore Float?
+
+  @@unique([symbol, url])
+  @@index([symbol, publishedAt])
+}
