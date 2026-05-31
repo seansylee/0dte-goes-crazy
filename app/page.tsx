@@ -1,3 +1,6 @@
+import { analyzeTicker } from "@/services/analysis/analyzeTicker";
+import type { AnalysisResult } from "@/types/domain";
+
 type SearchParams = Promise<{ [key: string]: string | string[] | undefined }>;
 
 type SignalTone = "Bullish" | "Bearish" | "Neutral";
@@ -6,23 +9,6 @@ type Signal = {
   label: string;
   tone: SignalTone;
   detail: string;
-};
-
-type StockSnapshot = {
-  ticker: string;
-  company: string;
-  price: number;
-  movePercent: number;
-  overallTone: SignalTone;
-  sentimentLabel: string;
-  support: number;
-  resistance: number;
-  intradayBias: string;
-  callPutRatio: number;
-  zeroDteVolume: string;
-  dealerGamma: string;
-  headline: string;
-  signals: Signal[];
 };
 
 const COMPANY_NAMES: Record<string, string> = {
@@ -45,12 +31,46 @@ export default async function Home({
 }) {
   const query = await searchParams;
   const rawTicker = firstValue(query.ticker) ?? "SPY";
-  const ticker = normalizeTicker(rawTicker);
-  const snapshot = createMockSnapshot(ticker);
+  const ticker = rawTicker.toUpperCase().replace(/[^A-Z.]/g, "").slice(0, 10) || "SPY";
+
   const reportDate = new Intl.DateTimeFormat("en-US", {
     dateStyle: "full",
     timeZone: "America/Los_Angeles",
   }).format(new Date());
+
+  let result: AnalysisResult | null = null;
+  let errorMessage: string | null = null;
+
+  try {
+    result = await analyzeTicker(ticker);
+  } catch (err) {
+    errorMessage = err instanceof Error ? err.message : "Analysis failed. Please try again.";
+  }
+
+  const company = COMPANY_NAMES[ticker] ?? `${ticker} Holdings`;
+  const overallTone = capitalizeLabel(result?.combined.label ?? "neutral");
+  const sentimentLabel = deriveSentimentLabel(overallTone);
+  const intradayBias = deriveIntradayBias(overallTone);
+
+  const price = result?.quote?.price ?? null;
+  const movePercent = result?.quote?.changePercent ?? null;
+  const support = result?.options.gammaExposure.maxPutWall ?? null;
+  const resistance = result?.options.gammaExposure.maxCallWall ?? null;
+  const pcr = result?.options.putCallRatio ?? 1;
+  const callPutRatio = pcr > 0 ? 1 / pcr : 1;
+  const netGamma = result?.options.gammaExposure.netGamma ?? 0;
+  const dealerGamma = deriveGammaLabel(netGamma, result?.options.available ?? false);
+  const zeroDteVolume = result?.options.available
+    ? formatVolume(
+        (result.options.gammaExposure.maxCallWall !== null ||
+          result.options.gammaExposure.maxPutWall !== null)
+          ? null
+          : null
+      )
+    : "No data";
+  const headline = result?.summary ?? `Analysis for ${ticker} is loading.`;
+
+  const signals: Signal[] = buildSignals(ticker, price, support, resistance, pcr, result);
 
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,_rgba(255,255,255,0.75),_transparent_36%),linear-gradient(180deg,_#f7f1e8_0%,_#ece4d5_52%,_#ded7ca_100%)] px-5 py-8 text-stone-900 sm:px-8 lg:px-10">
@@ -66,9 +86,9 @@ export default async function Home({
                   Daily zero-day options sentiment for any stock you look up.
                 </h1>
                 <p className="max-w-2xl text-base leading-7 text-stone-300 sm:text-lg">
-                  This version uses mock data, but it shows the structure you
-                  want: overall sentiment, bullish or bearish signals, support,
-                  resistance, and a quick 0DTE read for the day.
+                  Live sentiment, fundamentals, and options flow data — put/call
+                  ratio, dealer gamma exposure, and support/resistance from real
+                  options positioning.
                 </p>
               </div>
               <form action="/" className="flex flex-col gap-3 sm:flex-row">
@@ -92,41 +112,62 @@ export default async function Home({
             </div>
 
             <div className="grid gap-4 rounded-[1.5rem] border border-white/10 bg-white/6 p-5 backdrop-blur-sm">
-              <div className="flex items-start justify-between gap-4">
-                <div>
+              {errorMessage ? (
+                <div className="flex flex-col gap-3">
                   <p className="text-sm uppercase tracking-[0.24em] text-stone-400">
-                    Today&apos;s mock read
+                    Error loading {ticker}
                   </p>
-                  <p className="mt-2 text-3xl font-semibold tracking-[-0.05em]">
-                    {snapshot.ticker}
-                  </p>
-                  <p className="mt-1 text-sm text-stone-300">
-                    {snapshot.company}
+                  <p className="text-sm leading-6 text-rose-300">{errorMessage}</p>
+                  <p className="text-xs text-stone-500">
+                    Check your API keys or try a different ticker.
                   </p>
                 </div>
-                <SignalBadge tone={snapshot.overallTone} />
-              </div>
+              ) : (
+                <>
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-sm uppercase tracking-[0.24em] text-stone-400">
+                        Live read
+                      </p>
+                      <p className="mt-2 text-3xl font-semibold tracking-[-0.05em]">
+                        {ticker}
+                      </p>
+                      <p className="mt-1 text-sm text-stone-300">{company}</p>
+                    </div>
+                    <SignalBadge tone={overallTone} />
+                  </div>
 
-              <div className="grid gap-3 sm:grid-cols-2">
-                <MetricCard
-                  label="Spot price"
-                  value={`$${snapshot.price.toFixed(2)}`}
-                  accent={snapshot.movePercent >= 0 ? "up" : "down"}
-                  helper={`${formatSignedPercent(snapshot.movePercent)} today`}
-                />
-                <MetricCard
-                  label="Sentiment"
-                  value={snapshot.sentimentLabel}
-                  helper={snapshot.intradayBias}
-                />
-              </div>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <MetricCard
+                      label="Spot price"
+                      value={price != null ? `$${price.toFixed(2)}` : "—"}
+                      accent={
+                        movePercent != null
+                          ? movePercent >= 0
+                            ? "up"
+                            : "down"
+                          : "flat"
+                      }
+                      helper={
+                        movePercent != null
+                          ? `${formatSignedPercent(movePercent)} today`
+                          : "Price unavailable"
+                      }
+                    />
+                    <MetricCard
+                      label="Sentiment"
+                      value={sentimentLabel}
+                      helper={intradayBias}
+                    />
+                  </div>
 
-              <p className="text-sm leading-6 text-stone-300">
-                {snapshot.headline}
-              </p>
-              <p className="text-xs uppercase tracking-[0.2em] text-stone-500">
-                Session date: {reportDate}
-              </p>
+                  <p className="text-sm leading-6 text-stone-300">{headline}</p>
+                  <p className="text-xs uppercase tracking-[0.2em] text-stone-500">
+                    Session date: {reportDate}
+                    {result?.cached ? " · Cached" : ""}
+                  </p>
+                </>
+              )}
             </div>
           </div>
         </section>
@@ -136,25 +177,33 @@ export default async function Home({
             <DetailCard
               eyebrow="Key levels"
               title="Support"
-              value={`$${snapshot.support.toFixed(2)}`}
-              detail="Area where buyers may step in if price fades into intraday weakness."
+              value={support != null ? `$${support.toFixed(2)}` : "—"}
+              detail={
+                support != null
+                  ? "Max put OI strike — area where dealers may step in if price fades."
+                  : "Options data unavailable — support level not determined."
+              }
             />
             <DetailCard
               eyebrow="Key levels"
               title="Resistance"
-              value={`$${snapshot.resistance.toFixed(2)}`}
-              detail="Area where upside may stall if call activity fails to push through."
+              value={resistance != null ? `$${resistance.toFixed(2)}` : "—"}
+              detail={
+                resistance != null
+                  ? "Max call OI strike — area where upside may stall against call sellers."
+                  : "Options data unavailable — resistance level not determined."
+              }
             />
             <DetailCard
               eyebrow="Flow"
               title="0DTE volume"
-              value={snapshot.zeroDteVolume}
-              detail="Estimated same-day options activity from the mock tape."
+              value={zeroDteVolume}
+              detail="Same-day options activity derived from the nearest expiry options chain."
             />
             <DetailCard
               eyebrow="Positioning"
               title="Call / put ratio"
-              value={snapshot.callPutRatio.toFixed(2)}
+              value={result?.options.available ? callPutRatio.toFixed(2) : "—"}
               detail="A fast read on whether traders are leaning risk-on or hedging."
             />
           </div>
@@ -170,13 +219,13 @@ export default async function Home({
                 </h2>
               </div>
               <p className="rounded-full bg-stone-900 px-4 py-2 text-sm font-semibold text-stone-50">
-                {snapshot.dealerGamma}
+                {dealerGamma}
               </p>
             </div>
             <p className="mt-4 text-sm leading-6 text-stone-600">
-              Use this as a simple guide only. Positive gamma usually supports
-              mean reversion around major strikes, while negative gamma can
-              amplify price swings around support and resistance.
+              {result?.options.available
+                ? result.options.notes[1] ?? result.options.notes[0]
+                : "Options data is unavailable. Positive gamma supports mean reversion; negative gamma can amplify price swings."}
             </p>
           </div>
         </section>
@@ -188,17 +237,17 @@ export default async function Home({
                 Signal stack
               </p>
               <h2 className="mt-2 text-2xl font-semibold tracking-[-0.03em]">
-                Bullish, bearish, or neutral triggers for {snapshot.ticker}
+                Bullish, bearish, or neutral triggers for {ticker}
               </h2>
             </div>
             <p className="max-w-xl text-sm leading-6 text-stone-600">
-              The dashboard classifies today&apos;s mock inputs into directional
-              signals so you can scan the setup quickly.
+              Real-time signals derived from options flow, support/resistance
+              levels, and news sentiment.
             </p>
           </div>
 
           <div className="mt-6 grid gap-4 md:grid-cols-3">
-            {snapshot.signals.map((signal) => (
+            {signals.map((signal) => (
               <article
                 key={signal.label}
                 className="rounded-[1.4rem] border border-stone-900/10 bg-stone-50 p-5"
@@ -217,6 +266,106 @@ export default async function Home({
       </div>
     </main>
   );
+}
+
+function buildSignals(
+  ticker: string,
+  price: number | null,
+  support: number | null,
+  resistance: number | null,
+  pcr: number,
+  result: AnalysisResult | null
+): Signal[] {
+  const callPutRatio = pcr > 0 ? 1 / pcr : 1;
+
+  const flowTone: SignalTone =
+    callPutRatio > 1.08 ? "Bullish" : callPutRatio < 0.92 ? "Bearish" : "Neutral";
+
+  const flowDetail = result?.options.available
+    ? `Call/put flow ratio is ${callPutRatio.toFixed(2)} — ${
+        flowTone === "Bullish"
+          ? "call buyers are pressing for upside continuation."
+          : flowTone === "Bearish"
+            ? "put demand is leading and traders are leaning defensive."
+            : "options flow is relatively balanced."
+      }`
+    : "Options flow data unavailable for this ticker.";
+
+  let supportTone: SignalTone = "Neutral";
+  let supportDetail: string;
+  if (price != null && support != null) {
+    const gap = price - support;
+    supportTone = gap < 2 ? "Bullish" : gap > 4.5 ? "Neutral" : "Bullish";
+    supportDetail = `Spot is ${gap.toFixed(2)} pts above support at $${support.toFixed(2)} — buyers ${
+      gap < 2.4 ? "still have a nearby level to defend." : "have room before the setup weakens."
+    }`;
+  } else {
+    supportDetail = "Support level could not be determined from options positioning.";
+  }
+
+  let resistanceTone: SignalTone = "Neutral";
+  let resistanceDetail: string;
+  if (price != null && resistance != null) {
+    const gap = resistance - price;
+    resistanceTone =
+      gap < 2.2 ? "Bearish" : gap < 3.4 ? "Neutral" : "Bullish";
+    resistanceDetail = `Resistance is ${gap.toFixed(2)} pts overhead at $${resistance.toFixed(2)} — ${
+      gap < 2.2
+        ? "upside may get crowded quickly."
+        : gap < 3.4
+          ? "price still has upside room, but not much."
+          : "price has clear air before the next major ceiling."
+    }`;
+  } else {
+    resistanceDetail = "Resistance level could not be determined from options positioning.";
+  }
+
+  return [
+    { label: "Flow imbalance", tone: flowTone, detail: flowDetail },
+    { label: "Price vs support", tone: supportTone, detail: supportDetail },
+    { label: "Resistance pressure", tone: resistanceTone, detail: resistanceDetail },
+  ];
+}
+
+function capitalizeLabel(label: string): SignalTone {
+  if (label === "bullish") return "Bullish";
+  if (label === "bearish") return "Bearish";
+  return "Neutral";
+}
+
+function deriveSentimentLabel(tone: SignalTone): string {
+  if (tone === "Bullish") return "Upside pressure";
+  if (tone === "Bearish") return "Defensive tone";
+  return "Balanced tape";
+}
+
+function deriveIntradayBias(tone: SignalTone): string {
+  if (tone === "Bullish") return "Buyers are controlling the short-dated flow.";
+  if (tone === "Bearish") return "Short-dated hedging is weighing on the setup.";
+  return "Flow is mixed and likely needs a breakout trigger.";
+}
+
+function deriveGammaLabel(netGamma: number, available: boolean): string {
+  if (!available) return "No data";
+  const threshold = Math.abs(netGamma) * 0.05;
+  if (netGamma > threshold) return "Positive gamma";
+  if (netGamma < -threshold) return "Negative gamma";
+  return "Flat gamma";
+}
+
+function formatVolume(n: number | null): string {
+  if (n == null) return "—";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M contracts`;
+  if (n >= 1_000) return `${Math.round(n / 1_000)}K contracts`;
+  return `${n} contracts`;
+}
+
+function firstValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
+function formatSignedPercent(value: number) {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
 
 function MetricCard({
@@ -239,9 +388,7 @@ function MetricCard({
 
   return (
     <div className="rounded-[1.35rem] border border-white/10 bg-black/20 p-4">
-      <p className="text-xs uppercase tracking-[0.22em] text-stone-400">
-        {label}
-      </p>
+      <p className="text-xs uppercase tracking-[0.22em] text-stone-400">{label}</p>
       <p className={`mt-2 text-2xl font-semibold tracking-[-0.04em] ${accentClass}`}>
         {value}
       </p>
@@ -294,140 +441,4 @@ function SignalBadge({ tone }: { tone: SignalTone }) {
       {tone}
     </span>
   );
-}
-
-function createMockSnapshot(ticker: string): StockSnapshot {
-  const seed = hashTicker(ticker);
-  const basePrice = 80 + (seed % 420) + fractional(seed, 100);
-  const movePercent = round((fractional(seed * 3, 1200) - 6) / 2, 2);
-  const supportGap = 1.4 + fractional(seed * 5, 320) / 10;
-  const resistanceGap = 1.8 + fractional(seed * 7, 360) / 10;
-  const support = round(basePrice - supportGap, 2);
-  const resistance = round(basePrice + resistanceGap, 2);
-  const callPutRatio = round(0.72 + fractional(seed * 11, 110), 2);
-
-  const tones: SignalTone[] = [];
-  const signals: Signal[] = [
-    classifySignal(
-      "Flow imbalance",
-      callPutRatio > 1.08 ? "Bullish" : callPutRatio < 0.92 ? "Bearish" : "Neutral",
-      `Call/put flow ratio sits at ${callPutRatio.toFixed(2)}, which suggests ${
-        callPutRatio > 1.08
-          ? "call buyers are pressing for upside continuation."
-          : callPutRatio < 0.92
-            ? "put demand is leading and traders are leaning defensive."
-            : "options flow is relatively balanced."
-      }`
-    ),
-    classifySignal(
-      "Price vs support",
-      basePrice - support < 2 ? "Bullish" : basePrice - support > 4.5 ? "Neutral" : "Bullish",
-      `Spot is ${round(basePrice - support, 2).toFixed(2)} points above support, so buyers ${
-        basePrice - support < 2.4
-          ? "still have a nearby level to defend."
-          : "have room before the setup weakens."
-      }`
-    ),
-    classifySignal(
-      "Resistance pressure",
-      resistance - basePrice < 2.2 ? "Bearish" : resistance - basePrice < 3.4 ? "Neutral" : "Bullish",
-      `Resistance is ${round(resistance - basePrice, 2).toFixed(2)} points overhead, meaning ${
-        resistance - basePrice < 2.2
-          ? "upside may get crowded quickly."
-          : resistance - basePrice < 3.4
-            ? "price still has upside room, but not much."
-            : "price has clear air before the next major ceiling."
-      }`
-    ),
-  ];
-
-  for (const signal of signals) {
-    tones.push(signal.tone);
-  }
-
-  const bullishCount = tones.filter((tone) => tone === "Bullish").length;
-  const bearishCount = tones.filter((tone) => tone === "Bearish").length;
-
-  const overallTone =
-    bullishCount > bearishCount
-      ? "Bullish"
-      : bearishCount > bullishCount
-        ? "Bearish"
-        : "Neutral";
-
-  const sentimentLabel =
-    overallTone === "Bullish"
-      ? "Upside pressure"
-      : overallTone === "Bearish"
-        ? "Defensive tone"
-        : "Balanced tape";
-
-  const intradayBias =
-    overallTone === "Bullish"
-      ? "Buyers are controlling the short-dated flow."
-      : overallTone === "Bearish"
-        ? "Short-dated hedging is weighing on the setup."
-        : "Flow is mixed and likely needs a breakout trigger.";
-
-  const dealerGamma =
-    seed % 3 === 0
-      ? "Positive gamma"
-      : seed % 3 === 1
-        ? "Negative gamma"
-        : "Flat gamma";
-
-  const zeroDteVolume = `${70 + (seed % 150)}K contracts`;
-  const company = COMPANY_NAMES[ticker] ?? `${ticker} Holdings`;
-
-  return {
-    ticker,
-    company,
-    price: round(basePrice, 2),
-    movePercent,
-    overallTone,
-    sentimentLabel,
-    support,
-    resistance,
-    intradayBias,
-    callPutRatio,
-    zeroDteVolume,
-    dealerGamma,
-    headline: `${ticker} is showing a ${overallTone.toLowerCase()} 0DTE posture today, with support near $${support.toFixed(2)} and resistance near $${resistance.toFixed(2)}.`,
-    signals,
-  };
-}
-
-function classifySignal(
-  label: string,
-  tone: SignalTone,
-  detail: string
-): Signal {
-  return { label, tone, detail };
-}
-
-function firstValue(value: string | string[] | undefined) {
-  return Array.isArray(value) ? value[0] : value;
-}
-
-function normalizeTicker(value: string) {
-  const cleaned = value.toUpperCase().replace(/[^A-Z.]/g, "").slice(0, 5);
-  return cleaned || "SPY";
-}
-
-function hashTicker(value: string) {
-  return value.split("").reduce((total, char, index) => {
-    return total + char.charCodeAt(0) * (index + 17);
-  }, 0);
-}
-
-function fractional(seed: number, divisor: number) {
-  return (seed % divisor) / divisor;
-}
-
-function round(value: number, precision: number) {
-  return Number(value.toFixed(precision));
-}
-
-function formatSignedPercent(value: number) {
-  return `${value >= 0 ? "+" : ""}${value.toFixed(2)}%`;
 }
