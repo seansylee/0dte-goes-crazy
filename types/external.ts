@@ -147,3 +147,77 @@ export type FmpRatiosTtmResponse = z.infer<typeof fmpRatiosTtmResponseSchema>;
 export type FmpFinancialScoresResponse = z.infer<
   typeof fmpFinancialScoresResponseSchema
 >;
+
+export const yahooOptionContractSchema = z
+  .object({
+    strike: z.number(),
+    volume: z.number().int().nonnegative().optional(),
+    openInterest: z.number().int().nonnegative().optional(),
+    bid: z.number().nonnegative().optional(),
+    ask: z.number().nonnegative().optional(),
+    impliedVolatility: z.number().nonnegative().optional(),
+    lastPrice: z.number().nonnegative().optional(),
+  })
+  .passthrough();
+
+export const yahooOptionsExpirationSchema = z
+  .object({
+    expirationDate: z.number(),
+    calls: z.array(yahooOptionContractSchema).default([]),
+    puts: z.array(yahooOptionContractSchema).default([]),
+  })
+  .passthrough();
+
+// Yahoo Finance v7 options API response shape:
+// { optionChain: { result: [{ underlyingSymbol, expirationDates, options: [...] }], error } }
+export const yahooOptionsResultSchema = z
+  .object({
+    underlyingSymbol: z.string().optional(),
+    expirationDates: z.array(z.number()).default([]),
+    options: z.array(yahooOptionsExpirationSchema).default([]),
+  })
+  .passthrough();
+
+export const yahooOptionsApiResponseSchema = z
+  .object({
+    optionChain: z.object({
+      result: z.array(yahooOptionsResultSchema).default([]),
+      error: z.unknown().nullable().optional(),
+    }),
+  })
+  .passthrough();
+
+// Normalized shape used internally after extracting the first result
+export const yahooOptionsResponseSchema = z
+  .object({
+    options: z.array(yahooOptionsExpirationSchema).default([]),
+    expirationDates: z.array(z.number()).default([]),
+    underlyingSymbol: z.string().optional(),
+  })
+  .passthrough();
+
+// Yahoo Finance v7 quote API response: /v7/finance/quote?symbols={symbol}
+export const yahooQuoteResultSchema = z
+  .object({
+    symbol: z.string(),
+    regularMarketPrice: z.number().optional(),
+    regularMarketChangePercent: z.number().optional(),
+    regularMarketChange: z.number().optional(),
+  })
+  .passthrough();
+
+export const yahooQuoteApiResponseSchema = z
+  .object({
+    quoteResponse: z.object({
+      result: z.array(yahooQuoteResultSchema).default([]),
+      error: z.unknown().nullable().optional(),
+    }),
+  })
+  .passthrough();
+
+export const yahooQuoteResponseSchema = yahooQuoteResultSchema;
+
+export type YahooOptionContract = z.infer<typeof yahooOptionContractSchema>;
+export type YahooOptionsExpiration = z.infer<typeof yahooOptionsExpirationSchema>;
+export type YahooOptionsResponse = z.infer<typeof yahooOptionsResponseSchema>;
+export type YahooQuoteResponse = z.infer<typeof yahooQuoteResponseSchema>;

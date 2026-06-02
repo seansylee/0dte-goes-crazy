@@ -47,3 +47,14 @@ model NewsArticle {
   @@unique([symbol, url])
   @@index([symbol, publishedAt])
 }
+
+model OptionsSnapshot {
+  id        String   @id @default(cuid())
+  symbol    String
+  provider  String
+  payload   String
+  fetchedAt DateTime @default(now())
+
+  @@unique([symbol, provider])
+  @@index([symbol, fetchedAt])
+}

@@ -41,6 +41,9 @@ export async function GET(request: Request) {
         combinedScore: analysis.combined.combinedScore,
         label: analysis.combined.label,
         summary: analysis.summary,
+        optionsScore: analysis.options.optionsScore,
+        putCallRatio: analysis.options.putCallRatio,
+        price: analysis.quote?.price ?? null,
       })),
     });
   } catch (error) {
